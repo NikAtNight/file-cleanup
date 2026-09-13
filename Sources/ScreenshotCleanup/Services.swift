@@ -20,35 +20,16 @@ struct Command {
     }
 }
 
-struct FinderTrash {
-    static func connect() throws {
-        _ = try Command.run("/usr/bin/osascript", ["-e", "with timeout of 30 seconds\ntell application \"Finder\" to get name of startup disk\nend timeout"])
-    }
-    static func trash(_ url: URL) throws {
-        // Arguments stay separate from AppleScript source, including quotes in filenames.
-        let script = """
-        on run arguments
-            set targetFile to (POSIX file (item 1 of arguments)) as alias
-            with timeout of 30 seconds
-                tell application "Finder" to delete targetFile
-            end timeout
-        end run
-        """
-        _ = try Command.run("/usr/bin/osascript", ["-e", script, url.path])
-    }
-}
-
 struct AppServices {
     static let home = FileManager.default.homeDirectoryForCurrentUser
     static let support = home.appendingPathComponent("Library/Application Support/Screenshot Cleanup", isDirectory: true)
-    static let desktop = home.appendingPathComponent("Desktop", isDirectory: true)
-    static let engine = CleanupEngine(desktop: desktop)
+    static func engine(settings: CleanupCore.Settings) -> CleanupEngine { CleanupEngine(rules: settings.rules) }
     static func store() throws -> Store { try Store(directory: support) }
     static func clean(trigger: String) throws -> RunResult {
         let store = try store()
         let lock = try RunLock(url: store.lockURL)
-        return withExtendedLifetime(lock) {
-            var result = engine.run(trigger: trigger, trash: FinderTrash.trash)
+        return try withExtendedLifetime(lock) {
+            var result = engine(settings: try store.settings()).run(trigger: trigger, trash: FinderTrash.trash)
             do { try store.record(result) }
             catch { result.errors.append("Could not save run history: \(error.localizedDescription)") }
             return result
@@ -61,7 +42,7 @@ struct ScheduleService {
     static var domain: String { "gui/\(getuid())" }
     static var plist: URL { AppServices.home.appendingPathComponent("Library/LaunchAgents/\(label).plist") }
     static var installedExecutable: String {
-        AppServices.home.appendingPathComponent("Applications/Screenshot Cleanup.app/Contents/MacOS/ScreenshotCleanup").path
+        AppServices.home.appendingPathComponent("Applications/File Cleanup.app/Contents/MacOS/ScreenshotCleanup").path
     }
     static func isLoaded() -> Bool {
         (try? Command.run("/bin/launchctl", ["print", "\(domain)/\(label)"])) != nil
@@ -69,7 +50,7 @@ struct ScheduleService {
     static func apply(_ settings: Settings) throws {
         try settings.validate()
         guard FileManager.default.isExecutableFile(atPath: installedExecutable) else {
-            throw CleanupError.command("Install Screenshot Cleanup in your Applications folder before saving a schedule.")
+            throw CleanupError.command("Install File Cleanup in your Applications folder before saving a schedule.")
         }
         let store = try AppServices.store()
         let lock = try RunLock(url: store.lockURL)

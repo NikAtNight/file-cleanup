@@ -3,14 +3,18 @@
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>ScreenshotCleanup</string>
 <key>CFBundleIdentifier</key><string>com.nikhlkapadia.ScreenshotCleanup</string>
-<key>CFBundleName</key><string>Screenshot Cleanup</string>
-<key>CFBundleDisplayName</key><string>Screenshot Cleanup</string>
+<key>CFBundleName</key><string>File Cleanup</string>
+<key>CFBundleDisplayName</key><string>File Cleanup</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>2.0.0</string>
-<key>CFBundleVersion</key><string>2</string>
+<key>CFBundleShortVersionString</key><string>2.1.0</string>
+<key>CFBundleVersion</key><string>3</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>
-<key>NSDesktopFolderUsageDescription</key><string>Preview and organize screenshots on your Desktop.</string>
-<key>NSAppleEventsUsageDescription</key><string>Use Finder to move old screenshots to Trash, including screenshots stored in iCloud Drive.</string>
+<key>NSDesktopFolderUsageDescription</key><string>Find and organize files matching your cleanup rules.</string>
+<key>NSAppleEventsUsageDescription</key><string>Use Finder to move matching files to Trash in one batch, including files stored in iCloud Drive.</string>
+<key>NSDocumentsFolderUsageDescription</key><string>Find matching files in the Documents folders you choose.</string>
+<key>NSDownloadsFolderUsageDescription</key><string>Find matching files in the Downloads folders you choose.</string>
+<key>NSNetworkVolumesUsageDescription</key><string>Clean up matching files in the network folders you choose.</string>
+<key>NSRemovableVolumesUsageDescription</key><string>Clean up matching files in the removable-drive folders you choose.</string>
 </dict></plist>

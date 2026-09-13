@@ -2,8 +2,8 @@ import SwiftUI
 import AppKit
 import CleanupCore
 
-private let accent = Color(red: 0.08, green: 0.40, blue: 0.34)
-private let canvas = Color(red: 0.96, green: 0.97, blue: 0.95)
+private let accent = Theme.accent
+private let canvas = Theme.canvas
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
@@ -17,6 +17,8 @@ struct ContentView: View {
                     if let message = model.message { notice(message, isError: false) }
                     switch model.selectedPage {
                     case "Schedule": schedule
+                    case "Rules": RulesView(model: model)
+                    case "Appearance": appearance
                     case "Activity": activity
                     default: overview
                     }
@@ -27,23 +29,25 @@ struct ContentView: View {
             .background(canvas)
         }
         .tint(accent)
-        .preferredColorScheme(.light)
+        .onChange(of: model.settings.appearance) { model.applyAppearance($0) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refresh() }
     }
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 32) {
             HStack(spacing: 10) {
-                Image(systemName: "viewfinder").font(.system(size: 24, weight: .semibold)).foregroundStyle(accent)
+                Image(systemName: "folder").font(.system(size: 24, weight: .semibold)).foregroundStyle(accent)
                     .frame(width: 42, height: 42).background(accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 12))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Screenshot").font(.system(size: 15, weight: .semibold))
+                    Text("File").font(.system(size: 15, weight: .semibold))
                     Text("Cleanup").font(.system(size: 15, weight: .semibold)).foregroundStyle(accent)
                 }
             }
             VStack(spacing: 6) {
                 navigation("Overview", icon: "square.grid.2x2")
+                navigation("Rules", icon: "slider.horizontal.3")
                 navigation("Schedule", icon: "clock")
+                navigation("Appearance", icon: "circle.lefthalf.filled")
                 navigation("Activity", icon: "clock.arrow.circlepath")
             }
             Spacer()
@@ -53,15 +57,15 @@ struct ContentView: View {
                 Text("Runs on this Mac while you’re logged in.").font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(3)
             }
             Divider()
-            Button { NSWorkspace.shared.open(AppServices.desktop) } label: {
-                Label("Open Desktop", systemImage: "folder").font(.system(size: 12))
+            Button { model.selectedPage = "Rules" } label: {
+                Label("Manage folders", systemImage: "folder").font(.system(size: 12))
             }.buttonStyle(.plain).foregroundStyle(.secondary)
-            Text("SCREENSHOT CLEANUP  2.0").font(.system(size: 9, weight: .medium, design: .monospaced)).foregroundStyle(.tertiary)
+            Text("FILE CLEANUP  2.1").font(.system(size: 9, weight: .medium, design: .monospaced)).foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 22).padding(.vertical, 30)
-        .frame(width: 180)
-        .background(Color.white)
-        .overlay(alignment: .trailing) { Rectangle().fill(Color.black.opacity(0.06)).frame(width: 1) }
+        .frame(width: 200)
+        .background(Theme.sidebar)
+        .overlay(alignment: .trailing) { Rectangle().fill(Theme.border).frame(width: 1) }
     }
 
     private func navigation(_ title: String, icon: String) -> some View {
@@ -78,14 +82,14 @@ struct ContentView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("YOUR DESKTOP, IN ORDER").font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1.7).foregroundStyle(accent)
+            Text("YOUR FILES, IN ORDER").font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1.7).foregroundStyle(accent)
             HStack(alignment: .center) {
-                Text(model.selectedPage == "Overview" ? "Screenshot Cleanup" : model.selectedPage)
+                Text(model.selectedPage == "Overview" ? "File Cleanup" : model.selectedPage)
                     .font(.system(size: 29, weight: .semibold, design: .rounded))
                 Spacer()
                 if model.selectedPage != "Schedule" {
                     Button { model.refresh() } label: { Image(systemName: "arrow.clockwise").font(.system(size: 14)) }
-                        .buttonStyle(.plain).disabled(model.busy || model.refreshing).help("Refresh screenshots and recent runs")
+                        .buttonStyle(.plain).disabled(model.busy || model.refreshing).help("Refresh matching files and recent runs")
                 }
             }
             Text(subtitle).font(.system(size: 13)).foregroundStyle(.secondary)
@@ -93,26 +97,28 @@ struct ContentView: View {
     }
     private var subtitle: String {
         switch model.selectedPage {
-        case "Schedule": return "Choose when your desktop gets tidied."
+        case "Schedule": return "Choose when your cleanup rules run."
+        case "Rules": return "Choose what to clean, where to look, and what to keep."
+        case "Appearance": return "Choose how File Cleanup looks on this Mac."
         case "Activity": return "The last 30 runs, including anything that needs attention."
-        default: return "Keep recent screenshots nearby. Move older ones to Trash."
+        default: return "Keep what’s useful. Clear what’s ready to go."
         }
     }
 
     private var overview: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(spacing: 16) {
-                metric("Ready for Trash", count: model.trashCount, detail: "Older than 24 hours", icon: "trash")
-                metric("Ready to file", count: model.fileCount, detail: "Keep in Desktop / Screenshots", icon: "folder")
+                metric("Ready for Trash", count: model.trashCount, detail: "Past your rules’ age limits", icon: "trash")
+                metric("Ready to file", count: model.fileCount, detail: "Move to your chosen folders", icon: "folder")
             }
             VStack(alignment: .leading, spacing: 20) {
                 HStack(alignment: .top, spacing: 16) {
                     Image(systemName: "sparkles").font(.system(size: 24)).foregroundStyle(accent)
                         .frame(width: 48, height: 48).background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
                     VStack(alignment: .leading, spacing: 7) {
-                        Text(model.running ? "Cleaning up…" : (model.candidates.isEmpty ? "Your desktop is up to date" : "Ready when you are"))
+                        Text(model.running ? "Cleaning up…" : (model.candidates.isEmpty ? "Your folders are up to date" : "Ready when you are"))
                             .font(.system(size: 19, weight: .semibold, design: .rounded))
-                        Text("Only Screenshot and Screen Shot PNG files are included. Items in Trash remain recoverable until it’s emptied.")
+                        Text("Only files matching your saved rules are included. Items in Trash remain recoverable until it’s emptied.")
                             .font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
                     }
                 }
@@ -139,16 +145,16 @@ struct ContentView: View {
                     Spacer()
                     Text("\(model.candidates.count) files").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
-                if model.refreshing { ProgressView("Checking screenshots…").controlSize(.small) }
+                if model.refreshing { ProgressView("Checking your folders…").controlSize(.small) }
                 else if model.candidates.isEmpty {
-                    Label("No screenshots need attention.", systemImage: "checkmark.circle").font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 10)
+                    Label("No matching files need attention.", systemImage: "checkmark.circle").font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 10)
                 } else {
                     ForEach(model.candidates.prefix(5)) { candidate in
                         HStack(spacing: 10) {
                             Image(systemName: "photo").foregroundStyle(.secondary).frame(width: 24)
                             Text(candidate.url.lastPathComponent).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
                             Spacer()
-                            Text(candidate.action == .trash ? "To Trash" : "To Screenshots")
+                            Text(candidate.action == .trash ? "To Trash" : "To \(candidate.destinationDirectory?.lastPathComponent ?? "folder")")
                                 .font(.system(size: 10, weight: .medium)).foregroundStyle(candidate.action == .trash ? Color.secondary : accent)
                                 .padding(.horizontal, 8).padding(.vertical, 4).background(canvas, in: Capsule())
                         }
@@ -173,7 +179,7 @@ struct ContentView: View {
             Image(systemName: model.finderConnected ? "checkmark.shield" : "hand.raised").font(.system(size: 20)).foregroundStyle(accent)
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.finderConnected ? "Finder connected" : "Finder access").font(.system(size: 12, weight: .medium))
-                Text("Finder handles Trash correctly for iCloud screenshots.").font(.system(size: 11)).foregroundStyle(.secondary)
+                Text("Finder handles local and iCloud files in one Trash operation.").font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer()
             Button(model.connecting ? "Connecting…" : "Check access", action: model.connectFinder).disabled(model.busy || model.refreshing).accessibilityLabel("Check Finder access")
@@ -215,11 +221,11 @@ struct ContentView: View {
                     Button(model.saving ? "Saving…" : "Save schedule", action: model.saveSchedule)
                         .buttonStyle(.borderedProminent).disabled(model.busy || model.refreshing || !model.loaded)
                 }
-                if model.settings != model.savedSettings { Text("You have unsaved changes.").font(.system(size: 11)).foregroundStyle(.orange) }
+                if model.settings.times != model.savedSettings.times || model.settings.enabled != model.savedSettings.enabled { Text("You have unsaved changes.").font(.system(size: 11)).foregroundStyle(.orange) }
             }.card().disabled(model.running || model.saving)
             VStack(alignment: .leading, spacing: 12) {
                 Label("What happens at each run", systemImage: "arrow.triangle.2.circlepath").font(.system(size: 14, weight: .semibold))
-                Text("1. Move screenshots older than 24 hours to Trash.\n2. File newer desktop screenshots in Desktop / Screenshots.\n3. Save the result to Activity.")
+                Text("1. Find files matching your saved rules.\n2. Move older matches to Trash in a single batch.\n3. File newer matches when a destination is set.\n4. Save the result to Activity.")
                     .font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(8)
                 Text("Times follow this Mac’s time zone. macOS may catch up after sleep. The app window can be closed; you need to stay logged in.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
@@ -237,6 +243,26 @@ struct ContentView: View {
             let components = Calendar.current.dateComponents([.hour, .minute], from: date)
             model.settings.times[index] = DailyTime(hour: components.hour ?? 0, minute: components.minute ?? 0)
         })
+    }
+
+    private var appearance: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Color theme").font(.system(size: 16, weight: .semibold))
+                Picker("Appearance", selection: $model.settings.appearance) {
+                    Text("System").tag(AppearancePreference.system)
+                    Text("Light").tag(AppearancePreference.light)
+                    Text("Dark").tag(AppearancePreference.dark)
+                }.pickerStyle(.segmented)
+                Text("System follows your Mac’s appearance. Changes preview immediately; save to keep your choice.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
+                HStack {
+                    Spacer()
+                    Button("Save appearance") { model.saveChanges(.appearance) }
+                        .buttonStyle(.borderedProminent).disabled(model.busy || model.refreshing || !model.loaded)
+                }
+            }.card()
+        }
     }
 
     private var activity: some View {
@@ -280,14 +306,7 @@ struct ContentView: View {
             Button {
                 if isError { model.errorMessage = nil } else { model.message = nil }
             } label: { Image(systemName: "xmark").font(.system(size: 10)) }.buttonStyle(.plain)
-        }.foregroundStyle(isError ? Color(red: 0.58, green: 0.28, blue: 0.08) : accent)
+        }.foregroundStyle(isError ? Theme.warning : accent)
             .padding(14).background(isError ? Color.orange.opacity(0.09) : accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
-    }
-}
-
-private extension View {
-    func card() -> some View {
-        self.padding(20).background(Color.white, in: RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.055), lineWidth: 1))
     }
 }

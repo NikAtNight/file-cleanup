@@ -106,6 +106,61 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(history.first?.succeeded, false)
     }
 
+    func testLegacySettingsMigrateDefaultRulesAndAppearance() throws {
+        let legacy = Data(#"{"enabled":false,"times":[{"hour":8,"minute":15}]}"#.utf8)
+        let store = try Store(directory: root)
+        try legacy.write(to: store.settingsURL)
+        let settings = try store.settings()
+        XCTAssertFalse(settings.enabled)
+        XCTAssertEqual(settings.times, [.init(hour: 8, minute: 15)])
+        XCTAssertEqual(settings.rules, [.screenshots()])
+        XCTAssertEqual(settings.appearance, .system)
+        try store.save(settings)
+        XCTAssertEqual(try store.settings(), settings)
+    }
+
+    func testCustomRulesAndAppearanceRoundTrip() throws {
+        let store = try Store(directory: root)
+        var settings = Settings()
+        settings.appearance = .dark
+        settings.rules = [CleanupRule(name: "Documents", sourcePath: root.appendingPathComponent("Documents").path,
+                                      extensions: ["pdf", "docx"], prefixes: [], ageHours: 48)]
+        try store.save(settings)
+        XCTAssertEqual(try store.settings(), settings)
+    }
+
+    func testDuplicateOwnedDirectoriesAreRejected() {
+        let source = root.appendingPathComponent("Source").path
+        let archive = root.appendingPathComponent("Archive").path
+        let first = CleanupRule(name: "First", sourcePath: source, archivePath: archive)
+        for duplicate in [source, archive, source + "/../Source"] {
+            var settings = Settings()
+            settings.rules = [first, CleanupRule(name: "Second", sourcePath: duplicate)]
+            XCTAssertThrowsError(try settings.validate())
+            settings.rules[1].enabled = false
+            XCTAssertNoThrow(try settings.validate())
+        }
+        var settings = Settings()
+        settings.rules = [first, first]
+        XCTAssertThrowsError(try settings.validate())
+    }
+
+    func testRuleValidationRejectsInvalidPathsFiltersAndAges() {
+        let valid = CleanupRule(name: "Documents", sourcePath: root.path, extensions: ["pdf"], prefixes: [])
+        XCTAssertNoThrow(try valid.validate())
+        let changes: [(inout CleanupRule) -> Void] = [
+            { $0.name = " " }, { $0.sourcePath = "relative" }, { $0.sourcePath = "/" },
+            { $0.ageHours = 0 }, { $0.ageHours = 8761 }, { $0.extensions = [] },
+            { $0.extensions = [".pdf"] }, { $0.prefixes = [""] }, { $0.prefixes = ["path/name"] },
+            { $0.archivePath = $0.sourcePath }, { $0.archivePath = "relative" }
+        ]
+        for change in changes {
+            var rule = valid
+            change(&rule)
+            XCTAssertThrowsError(try rule.validate())
+        }
+    }
+
     func testCorruptHistoryIsReportedAndNotOverwritten() throws {
         let store = try Store(directory: root)
         let corrupt = Data("broken history".utf8)

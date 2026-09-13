@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 import CleanupCore
 
+enum SettingsSection: Sendable { case schedule, rules, appearance }
+
 @MainActor final class AppModel: ObservableObject {
     @Published var candidates: [Candidate] = []
     @Published var history: [RunResult] = []
@@ -27,8 +29,8 @@ import CleanupCore
         guard !refreshing, !busy else { return }
         refreshing = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let scan = AppServices.engine.scan()
             let settings = Result { try AppServices.store().settings() }
+            let scan = (try? settings.get()).map { AppServices.engine(settings: $0).scan() } ?? ScanResult()
             let history = Result { try AppServices.store().history() }
             let loaded = ScheduleService.isLoaded()
             Task { @MainActor in
@@ -38,7 +40,7 @@ import CleanupCore
                 var errors = scan.errors
                 switch settings {
                 case .success(let value):
-                    if !self.loaded { self.settings = value; self.loaded = true }
+                    if !self.loaded { self.settings = value; self.loaded = true; self.applyAppearance(value.appearance) }
                     self.savedSettings = value
                 case .failure(let error): errors.append("Settings: \(error.localizedDescription)")
                 }
@@ -65,7 +67,7 @@ import CleanupCore
                     if run.trashed > 0 { self.finderConnected = true }
                     self.message = "Moved \(run.trashed) to Trash · Filed \(run.filed)"
                     if !run.errors.isEmpty {
-                        self.errorMessage = "\(run.errors.count) item(s) need attention. Open Activity for details. If Finder access was denied, allow Screenshot Cleanup → Finder in System Settings → Privacy & Security → Automation."
+                        self.errorMessage = "\(run.errors.count) item(s) need attention. Open Activity for details. If Finder access was denied, allow File Cleanup → Finder in System Settings → Privacy & Security → Automation."
                     }
                 case .failure(let error): self.errorMessage = error.localizedDescription
                 }
@@ -85,28 +87,47 @@ import CleanupCore
                 switch result {
                 case .success:
                     self.finderConnected = true
-                    self.message = "Finder is connected. Cleanup can move screenshots to Trash."
+                    self.message = "Finder is connected. Cleanup can move matching files to Trash."
                 case .failure(let error):
-                    self.errorMessage = "Finder access failed. In System Settings → Privacy & Security → Automation, enable Finder under Screenshot Cleanup. \(error.localizedDescription)"
+                    self.errorMessage = "Finder access failed. In System Settings → Privacy & Security → Automation, enable Finder under File Cleanup. \(error.localizedDescription)"
                 }
             }
         }
     }
 
-    func saveSchedule() {
+    func applyAppearance(_ preference: AppearancePreference) {
+        switch preference {
+        case .system: NSApplication.shared.appearance = nil
+        case .light: NSApplication.shared.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
+    func saveSchedule() { saveChanges(.schedule) }
+    func saveChanges(_ section: SettingsSection) {
         guard !busy, !refreshing else { return }
-        let proposed = settings
+        var proposed = savedSettings
+        switch section {
+        case .schedule: proposed.enabled = settings.enabled; proposed.times = settings.times
+        case .rules: proposed.rules = settings.rules
+        case .appearance: proposed.appearance = settings.appearance
+        }
+        let toSave = proposed
         saving = true
         errorMessage = nil
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try ScheduleService.apply(proposed) }
+            let result = Result { try ScheduleService.apply(toSave) }
             Task { @MainActor in
                 self.saving = false
                 switch result {
                 case .success:
-                    self.savedSettings = proposed
-                    self.scheduleLoaded = proposed.enabled
-                    self.message = proposed.enabled ? "Daily schedule saved." : "Automatic cleanup is paused."
+                    self.savedSettings = toSave
+                    self.scheduleLoaded = toSave.enabled
+                    switch section {
+                    case .schedule: self.message = toSave.enabled ? "Daily schedule saved." : "Automatic cleanup is paused."
+                    case .rules: self.message = "Cleanup rules saved. Overview now previews these rules."
+                    case .appearance: self.message = "Appearance saved."
+                    }
+                    self.refresh()
                 case .failure(let error): self.errorMessage = error.localizedDescription
                 }
             }

@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 swift build -c release
-app_dir="$PWD/.build/Screenshot Cleanup.app"
+app_dir="$PWD/.build/File Cleanup.app"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp .build/release/ScreenshotCleanup "$app_dir/Contents/MacOS/ScreenshotCleanup"
 cp Resources/Info.plist "$app_dir/Contents/Info.plist"

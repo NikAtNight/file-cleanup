@@ -61,7 +61,7 @@ final class CleanupCoreTests: XCTestCase {
         try file("Screenshot same.png", contents: "incoming")
         let original = try file("Screenshots/Screenshot same.png", contents: "original")
         let firstSuffix = try file("Screenshots/Screenshot same-1.png", contents: "other")
-        let result = CleanupEngine(desktop: root).run(trigger: "test", now: now) { _ in XCTFail("Unexpected trash") }
+        let result = CleanupEngine(desktop: root).run(trigger: "test", now: now) { _ in XCTFail("Unexpected trash"); return TrashBatchResult(trashed: 0) }
         XCTAssertTrue(result.succeeded)
         XCTAssertEqual(result.filed, 1)
         XCTAssertEqual(try String(contentsOf: original), "original")
@@ -76,7 +76,10 @@ final class CleanupCoreTests: XCTestCase {
         XCTAssertTrue(scan.errors.isEmpty)
         XCTAssertEqual(scan.candidates.map(\.url.lastPathComponent), [old.lastPathComponent])
         XCTAssertEqual(scan.candidates.first?.action, .trash)
-        let result = engine.run(trigger: "test", now: now) { try FileManager.default.removeItem(at: $0) }
+        let result = engine.run(trigger: "test", now: now) { urls in
+            for url in urls { try FileManager.default.removeItem(at: url) }
+            return TrashBatchResult(trashed: urls.count)
+        }
         XCTAssertTrue(result.succeeded)
         XCTAssertEqual(result.trashed, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))
@@ -90,7 +93,10 @@ final class CleanupCoreTests: XCTestCase {
         XCTAssertEqual(scan.errors.count, 1)
         XCTAssertTrue(try XCTUnwrap(scan.errors.first).contains("Screenshots"))
         XCTAssertEqual(scan.candidates.map(\.url.lastPathComponent), [old.lastPathComponent])
-        let result = engine.run(trigger: "test", now: now) { try FileManager.default.removeItem(at: $0) }
+        let result = engine.run(trigger: "test", now: now) { urls in
+            for url in urls { try FileManager.default.removeItem(at: url) }
+            return TrashBatchResult(trashed: urls.count)
+        }
         XCTAssertFalse(result.succeeded)
         XCTAssertEqual(result.errors.count, 1)
         XCTAssertEqual(result.trashed, 1)
@@ -98,26 +104,48 @@ final class CleanupCoreTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: obstruction), "keep this file")
     }
 
-    func testTrashFailureContinuesAndFilesRecentScreenshots() throws {
+    func testTrashBatchFailureStillFilesRecentScreenshots() throws {
         let failed = try file("Screenshot a failed.png", age: 90000)
         let old = try file("Screenshot b old.png", age: 90000)
         try file("Screenshot c recent.png")
-        var attempted: [URL] = []
-        let result = CleanupEngine(desktop: root).run(trigger: "manual", now: now) { url in
-            attempted.append(url)
-            if url.lastPathComponent == failed.lastPathComponent { throw CocoaError(.fileWriteNoPermission) }
-            try FileManager.default.removeItem(at: url)
+        var attempted: [[URL]] = []
+        let result = CleanupEngine(desktop: root).run(trigger: "manual", now: now) { urls in
+            attempted.append(urls)
+            throw CocoaError(.fileWriteNoPermission)
         }
-        XCTAssertEqual(attempted.map(\.lastPathComponent), [failed, old].map(\.lastPathComponent))
+        XCTAssertEqual(attempted.count, 1)
+        XCTAssertEqual(try XCTUnwrap(attempted.first).map(\.lastPathComponent), [failed, old].map(\.lastPathComponent))
         XCTAssertEqual(result.trigger, "manual")
-        XCTAssertEqual(result.trashed, 1)
+        XCTAssertEqual(result.trashed, 0)
         XCTAssertEqual(result.filed, 1)
         XCTAssertFalse(result.succeeded)
         XCTAssertEqual(result.errors.count, 1)
-        let error = try XCTUnwrap(result.errors.first)
-        XCTAssertTrue(error.contains(failed.lastPathComponent))
         XCTAssertTrue(FileManager.default.fileExists(atPath: failed.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: old.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("Screenshots/Screenshot c recent.png").path))
+    }
+
+    func testPartialTrashBatchRecordsSuccessAndErrorWhileFilingRecentFiles() throws {
+        let skipped = try file("Screenshot a skipped.png", age: 90000)
+        let old = try file("Screenshot b old.png", age: 90000)
+        try file("Screenshot recent.png")
+        var batches = 0
+        let message = "Screenshot a skipped.png: file unavailable"
+        let result = CleanupEngine(desktop: root).run(trigger: "test", now: now) { urls in
+            batches += 1
+            XCTAssertEqual(urls.map(\.lastPathComponent), [skipped, old].map(\.lastPathComponent))
+            let processed = try XCTUnwrap(urls.first { $0.lastPathComponent == old.lastPathComponent })
+            try FileManager.default.removeItem(at: processed)
+            return TrashBatchResult(trashed: 1, errors: [message])
+        }
+        XCTAssertEqual(batches, 1)
+        XCTAssertEqual(result.trashed, 1)
+        XCTAssertEqual(result.errors, [message])
+        XCTAssertFalse(result.succeeded)
+        XCTAssertEqual(result.filed, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: skipped.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("Screenshots/Screenshot recent.png").path))
     }
 
     func testSymlinkedScreenshotsDirectoryCannotReachExternalFiles() throws {
@@ -133,7 +161,7 @@ final class CleanupCoreTests: XCTestCase {
         XCTAssertEqual(scan.candidates.map(\.url.lastPathComponent), [recent.lastPathComponent])
         XCTAssertEqual(scan.candidates.first?.action, .file)
 
-        let result = engine.run(trigger: "test", now: now) { _ in XCTFail("Must not trash files through a directory symlink") }
+        let result = engine.run(trigger: "test", now: now) { _ in XCTFail("Must not trash files through a directory symlink"); return TrashBatchResult(trashed: 0) }
         XCTAssertFalse(result.succeeded)
         XCTAssertEqual(result.trashed, 0)
         XCTAssertEqual(result.filed, 0)
@@ -147,14 +175,87 @@ final class CleanupCoreTests: XCTestCase {
         try file("Screenshot old.png", age: 90000)
         try file("Screenshot new.png")
         let engine = CleanupEngine(desktop: root)
-        let first = engine.run(trigger: "test", now: now) { try FileManager.default.removeItem(at: $0) }
-        let second = engine.run(trigger: "test", now: now) { _ in XCTFail("Already processed") }
+        let first = engine.run(trigger: "test", now: now) { urls in
+            for url in urls { try FileManager.default.removeItem(at: url) }
+            return TrashBatchResult(trashed: urls.count)
+        }
+        let second = engine.run(trigger: "test", now: now) { _ in XCTFail("Already processed"); return TrashBatchResult(trashed: 0) }
         XCTAssertTrue(first.succeeded)
         XCTAssertEqual(first.trashed, 1)
         XCTAssertEqual(first.filed, 1)
         XCTAssertTrue(second.succeeded)
         XCTAssertEqual(second.trashed, 0)
         XCTAssertEqual(second.filed, 0)
+    }
+
+    func testCustomRuleWithoutArchiveUsesExtensionsAndAgeWithoutPrefixes() throws {
+        let source = root.appendingPathComponent("Downloads")
+        try file("Downloads/report.PDF", age: 7201)
+        try file("Downloads/boundary.pdf", age: 7200)
+        try file("Downloads/recent.pdf", age: 10)
+        try file("Downloads/other.png", age: 90000)
+        let rule = CleanupRule(name: "Documents", sourcePath: source.path,
+                               extensions: ["pdf"], prefixes: [], ageHours: 2)
+        let scan = CleanupEngine(rules: [rule]).scan(now: now)
+        XCTAssertTrue(scan.errors.isEmpty)
+        XCTAssertEqual(scan.candidates.map(\.url.lastPathComponent), ["report.PDF"])
+        XCTAssertEqual(scan.candidates.first?.action, .trash)
+        XCTAssertEqual(scan.candidates.first?.ruleName, "Documents")
+        XCTAssertNil(scan.candidates.first?.destinationDirectory)
+    }
+
+    func testDistinctRulesUseOneTrashBatchAndSkipDisabledRule() throws {
+        try file("Documents/invoice.pdf", age: 90000)
+        try file("Images/Photo old.JPG", age: 90000)
+        try file("Images/unmatched.jpg", age: 90000)
+        let disabled = try file("Disabled/ignored.png", age: 90000)
+        let rules = [
+            CleanupRule(name: "Documents", sourcePath: root.appendingPathComponent("Documents").path,
+                        extensions: ["pdf"], prefixes: []),
+            CleanupRule(name: "Photos", sourcePath: root.appendingPathComponent("Images").path,
+                        extensions: ["jpg"], prefixes: ["Photo "]),
+            CleanupRule(name: "Disabled", enabled: false, sourcePath: root.appendingPathComponent("Disabled").path,
+                        prefixes: [])
+        ]
+        var batches: [[URL]] = []
+        let result = CleanupEngine(rules: rules).run(trigger: "test", now: now) { urls in
+            batches.append(urls)
+            for url in urls { try FileManager.default.removeItem(at: url) }
+            return TrashBatchResult(trashed: urls.count)
+        }
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(result.trashed, 2)
+        XCTAssertEqual(batches.count, 1)
+        XCTAssertEqual(Set(try XCTUnwrap(batches.first).map(\.lastPathComponent)), ["invoice.pdf", "Photo old.JPG"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: disabled.path))
+    }
+
+    func testSymlinkedSourceCannotScanExternalFiles() throws {
+        let old = try file("External/document.pdf", age: 90000)
+        let link = root.appendingPathComponent("Linked")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: old.deletingLastPathComponent())
+        let rule = CleanupRule(name: "Linked", sourcePath: link.path, extensions: ["pdf"], prefixes: [])
+        let engine = CleanupEngine(rules: [rule])
+        let scan = engine.scan(now: now)
+        XCTAssertFalse(scan.errors.isEmpty)
+        XCTAssertTrue(scan.candidates.isEmpty)
+        let result = engine.run(trigger: "test", now: now) { _ in XCTFail("Unexpected trash"); return TrashBatchResult(trashed: 0) }
+        XCTAssertFalse(result.succeeded)
+        XCTAssertEqual(try String(contentsOf: old), "image")
+    }
+
+    func testBrokenDestinationSymlinkIsPreservedOnCollision() throws {
+        try file("Screenshot same.png", contents: "incoming")
+        let archive = root.appendingPathComponent("Screenshots")
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        let collision = archive.appendingPathComponent("Screenshot same.png")
+        let target = root.appendingPathComponent("missing.png")
+        try FileManager.default.createSymbolicLink(at: collision, withDestinationURL: target)
+        let result = CleanupEngine(desktop: root).run(trigger: "test", now: now) { _ in XCTFail("Unexpected trash"); return TrashBatchResult(trashed: 0) }
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(result.filed, 1)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: collision.path), target.path)
+        XCTAssertEqual(try String(contentsOf: archive.appendingPathComponent("Screenshot same-1.png")), "incoming")
     }
 
     func testRunLockExcludesConcurrentRunAndReleases() throws {

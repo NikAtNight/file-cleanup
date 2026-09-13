@@ -10,8 +10,31 @@ public struct DailyTime: Codable, Equatable, Hashable, Identifiable, Sendable {
 public struct Settings: Codable, Equatable, Sendable {
     public var enabled = true
     public var times = [DailyTime(hour: 9, minute: 30), DailyTime(hour: 10, minute: 0)]
+    public var rules = [CleanupRule.screenshots()]
+    public var appearance: AppearancePreference = .system
     public init() {}
+    private enum CodingKeys: String, CodingKey { case enabled, times, rules, appearance }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try values.decode(Bool.self, forKey: .enabled)
+        times = try values.decode([DailyTime].self, forKey: .times)
+        rules = try values.decodeIfPresent([CleanupRule].self, forKey: .rules) ?? [CleanupRule.screenshots()]
+        appearance = try values.decodeIfPresent(AppearancePreference.self, forKey: .appearance) ?? .system
+    }
     public func validate() throws {
+        guard Set(rules.map(\.id)).count == rules.count else { throw CleanupError.command("Each rule must have its own identifier.") }
+        var folders = Set<String>()
+        for rule in rules {
+            try rule.validate()
+            if rule.enabled {
+                for folder in [rule.source, rule.archive].compactMap({ $0 }) {
+                    let path = folder.standardizedFileURL.resolvingSymlinksInPath().path
+                    guard folders.insert(path).inserted else {
+                        throw CleanupError.command("A folder belongs to more than one enabled rule. Use separate folders or combine the file filters into one rule.")
+                    }
+                }
+            }
+        }
         guard !times.isEmpty, times.count <= 8,
               times.allSatisfy({ (0...23).contains($0.hour) && (0...59).contains($0.minute) }),
               Set(times).count == times.count else {

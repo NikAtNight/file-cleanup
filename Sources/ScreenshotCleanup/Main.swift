@@ -6,7 +6,9 @@ import CleanupCore
     static func main() {
         let arguments = CommandLine.arguments
         if arguments.contains("--dry-run") {
-            let scan = AppServices.engine.scan()
+            let scan: ScanResult
+            do { scan = AppServices.engine(settings: try AppServices.store().settings()).scan() }
+            catch { fail(error) }
             for candidate in scan.candidates {
                 print("Would \(candidate.action.rawValue): \(candidate.url.path)")
             }
@@ -47,7 +49,7 @@ import CleanupCore
     func applicationDidFinishLaunching(_ notification: Notification) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 740),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "Screenshot Cleanup"
+        window.title = "File Cleanup"
         window.titlebarAppearsTransparent = true
         window.minSize = NSSize(width: 880, height: 640)
         window.contentView = NSHostingView(rootView: ContentView(model: model))
@@ -56,9 +58,9 @@ import CleanupCore
         let menu = NSMenu()
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About Screenshot Cleanup", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "About File Cleanup", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit Screenshot Cleanup", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit File Cleanup", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         menu.addItem(appItem)
         NSApplication.shared.mainMenu = menu

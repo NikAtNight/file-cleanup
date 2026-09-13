@@ -4,8 +4,15 @@ import Darwin
 public enum CleanupAction: String, Codable { case trash, file }
 
 public struct ScanResult {
+    public init() {}
     public var candidates: [Candidate] = []
     public var errors: [String] = []
+}
+
+public struct TrashBatchResult {
+    public var trashed: Int
+    public var errors: [String]
+    public init(trashed: Int, errors: [String] = []) { self.trashed = trashed; self.errors = errors }
 }
 
 public struct Candidate: Identifiable {
@@ -13,6 +20,8 @@ public struct Candidate: Identifiable {
     public let url: URL
     public let action: CleanupAction
     public let bytes: Int64
+    public let ruleName: String
+    public let destinationDirectory: URL?
 }
 
 public struct RunResult: Codable, Identifiable {
@@ -38,77 +47,92 @@ public enum CleanupError: LocalizedError {
 }
 
 public struct CleanupEngine {
-    public let desktop: URL
-    public var screenshots: URL { desktop.appendingPathComponent("Screenshots", isDirectory: true) }
-    public init(desktop: URL) { self.desktop = desktop }
+    public let rules: [CleanupRule]
+    public init(rules: [CleanupRule]) { self.rules = rules }
+    public init(desktop: URL) {
+        rules = [CleanupRule(name: "Screenshots", sourcePath: desktop.path,
+                             archivePath: desktop.appendingPathComponent("Screenshots").path)]
+    }
 
     public func scan(now: Date = Date()) -> ScanResult {
         let fm = FileManager.default
-        let cutoff = now.addingTimeInterval(-86400)
         var result = ScanResult()
-        for directory in [desktop, screenshots] {
-            do {
-                if directory == screenshots {
-                    try verifyScreenshotsDirectory()
-                    if !fm.fileExists(atPath: directory.path) { continue }
-                }
-                let urls = try fm.contentsOfDirectory(at: directory,
-                    includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey, .fileSizeKey],
-                    options: [.skipsHiddenFiles])
-                for url in urls {
-                    let name = url.lastPathComponent
-                    guard (name.hasPrefix("Screenshot ") || name.hasPrefix("Screen Shot ")),
-                          url.pathExtension.lowercased() == "png" else { continue }
-                    do {
-                        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey, .fileSizeKey])
-                        guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
-                        guard let modified = values.contentModificationDate else { throw CocoaError(.fileReadUnknown) }
-                        if modified < cutoff {
-                            result.candidates.append(Candidate(url: url, action: .trash, bytes: Int64(values.fileSize ?? 0)))
-                        } else if directory == desktop {
-                            result.candidates.append(Candidate(url: url, action: .file, bytes: Int64(values.fileSize ?? 0)))
-                        }
-                    } catch { result.errors.append("\(url.lastPathComponent): \(error.localizedDescription)") }
-                }
-            } catch { result.errors.append("\(directory.path): \(error.localizedDescription)") }
+        var settings = Settings()
+        settings.rules = rules
+        do { try settings.validate() }
+        catch { result.errors.append(error.localizedDescription); return result }
+        for rule in rules where rule.enabled {
+            let cutoff = now.addingTimeInterval(-Double(rule.ageHours) * 3600)
+            for directory in [rule.source, rule.archive].compactMap({ $0 }) {
+                do {
+                    try verifyDirectory(directory)
+                    if directory == rule.archive && !fm.fileExists(atPath: directory.path) { continue }
+                    let urls = try fm.contentsOfDirectory(at: directory,
+                        includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey, .fileSizeKey],
+                        options: [.skipsHiddenFiles])
+                    for url in urls where rule.matches(url) {
+                        do {
+                            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey, .fileSizeKey])
+                            guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+                            guard let modified = values.contentModificationDate else { throw CocoaError(.fileReadUnknown) }
+                            if modified < cutoff {
+                                result.candidates.append(Candidate(url: url, action: .trash, bytes: Int64(values.fileSize ?? 0), ruleName: rule.name, destinationDirectory: nil))
+                            } else if directory == rule.source, let archive = rule.archive {
+                                result.candidates.append(Candidate(url: url, action: .file, bytes: Int64(values.fileSize ?? 0), ruleName: rule.name, destinationDirectory: archive))
+                            }
+                        } catch { result.errors.append("\(rule.name) / \(url.lastPathComponent): \(error.localizedDescription)") }
+                    }
+                } catch { result.errors.append("\(rule.name) / \(directory.path): \(error.localizedDescription)") }
+            }
         }
         result.candidates.sort { $0.url.path < $1.url.path }
         return result
     }
 
-    public func run(trigger: String, now: Date = Date(), trash: (URL) throws -> Void) -> RunResult {
+    public func run(trigger: String, now: Date = Date(), trash: ([URL]) throws -> TrashBatchResult) -> RunResult {
         var result = RunResult(trigger: trigger)
         let scan = scan(now: now)
         result.errors = scan.errors
-        for candidate in scan.candidates {
+        let oldFiles = scan.candidates.filter { $0.action == .trash }.map(\.url)
+        if !oldFiles.isEmpty {
             do {
-                switch candidate.action {
-                case .trash:
-                    try trash(candidate.url)
-                    result.trashed += 1
-                case .file:
-                    try verifyScreenshotsDirectory()
-                    try FileManager.default.createDirectory(at: screenshots, withIntermediateDirectories: true)
-                    try FileManager.default.moveItem(at: candidate.url, to: uniqueDestination(candidate.url))
-                    result.filed += 1
-                }
+                let batch = try trash(oldFiles)
+                result.trashed = batch.trashed
+                result.errors.append(contentsOf: batch.errors)
+            }
+            catch { result.errors.append(error.localizedDescription) }
+        }
+        for candidate in scan.candidates where candidate.action == .file {
+            do {
+                guard let directory = candidate.destinationDirectory else { continue }
+                try verifyDirectory(directory)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try FileManager.default.moveItem(at: candidate.url, to: uniqueDestination(candidate.url, in: directory))
+                result.filed += 1
             } catch { result.errors.append("\(candidate.url.lastPathComponent): \(error.localizedDescription)") }
         }
         return result
     }
 
-    private func verifyScreenshotsDirectory() throws {
-        if (try? FileManager.default.destinationOfSymbolicLink(atPath: screenshots.path)) != nil {
-            throw CleanupError.command("Desktop/Screenshots is a symbolic link. Use a regular folder to keep cleanup within Desktop.")
+    private func verifyDirectory(_ directory: URL) throws {
+        // Check ancestors too, so a folder nested below a symlink cannot escape its selected location.
+        var current = directory.standardizedFileURL
+        while current.path != "/" {
+            if (try? FileManager.default.destinationOfSymbolicLink(atPath: current.path)) != nil {
+                // macOS exposes /var and /tmp as system symlinks. These are valid temp roots, not user routing.
+                if current.path != "/var" && current.path != "/tmp" {
+                    throw CleanupError.command("\(directory.lastPathComponent) uses a symbolic link. Choose the actual folder instead.")
+                }
+            }
+            current.deleteLastPathComponent()
         }
     }
 
-    private func uniqueDestination(_ source: URL) -> URL {
-        let initial = screenshots.appendingPathComponent(source.lastPathComponent)
-        var candidate = initial
+    private func uniqueDestination(_ source: URL, in directory: URL) -> URL {
+        var candidate = directory.appendingPathComponent(source.lastPathComponent)
         var suffix = 1
-        while FileManager.default.fileExists(atPath: candidate.path) {
-            candidate = screenshots.appendingPathComponent("\(source.deletingPathExtension().lastPathComponent)-\(suffix).\(source.pathExtension)")
+        while FileManager.default.fileExists(atPath: candidate.path) || (try? FileManager.default.destinationOfSymbolicLink(atPath: candidate.path)) != nil {
+            candidate = directory.appendingPathComponent("\(source.deletingPathExtension().lastPathComponent)-\(suffix).\(source.pathExtension)")
             suffix += 1
         }
         return candidate
