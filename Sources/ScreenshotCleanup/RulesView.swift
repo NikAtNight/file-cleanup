@@ -9,7 +9,7 @@ struct RulesView: View {
             Text("Each rule checks one source folder and, optionally, the folder where newer files are kept. Subfolders and symbolic links are skipped.")
                 .font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
             ForEach($model.settings.rules) { $rule in
-                RuleEditor(rule: $rule) { model.settings.rules.removeAll { $0.id == rule.id } }
+                RuleEditor(rule: $rule, review: { model.reviewCleanup(rule: rule) }, remove: { model.settings.rules.removeAll { $0.id == rule.id } })
             }
             HStack {
                 Button {
@@ -25,18 +25,20 @@ struct RulesView: View {
             }
             Label("Files go to Trash in one Finder operation per run. A system Trash sound may play once.", systemImage: "speaker.wave.1")
                 .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4).card()
-        }.disabled(model.busy)
+        }.disabled(model.busy || model.refreshing || !model.loaded)
     }
 }
 
 private struct RuleEditor: View {
     @Binding var rule: CleanupRule
     let remove: () -> Void
+    let review: () -> Void
     @State private var extensionsText: String
     @State private var prefixesText: String
-    init(rule: Binding<CleanupRule>, remove: @escaping () -> Void) {
+    init(rule: Binding<CleanupRule>, review: @escaping () -> Void, remove: @escaping () -> Void) {
         _rule = rule
         self.remove = remove
+        self.review = review
         _extensionsText = State(initialValue: rule.wrappedValue.extensions.joined(separator: ", "))
         _prefixesText = State(initialValue: rule.wrappedValue.prefixes.joined(separator: "\n"))
     }
@@ -46,6 +48,25 @@ private struct RuleEditor: View {
                 TextField("Rule name", text: $rule.name).font(.system(size: 17, weight: .semibold)).textFieldStyle(.plain)
                 Toggle("Enabled", isOn: $rule.enabled).toggleStyle(.switch).labelsHidden().help("Enable this rule")
                 Button(action: remove) { Image(systemName: "minus.circle") }.buttonStyle(.plain).help("Remove rule without changing files")
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 10) {
+                Label(rule.allowsAutomaticCleanup ? "Automatic cleanup approved" : "Review only", systemImage: rule.allowsAutomaticCleanup ? "checkmark.shield" : "hand.raised")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("New rules only preview files. Changing folders, filters, age, or the limit requires approval again. Review-only rules never move files on a schedule.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                HStack {
+                    Text("Pause automatic runs above").font(.system(size: 12))
+                    TextField("Files", value: $rule.maxAutomaticFiles, format: .number.grouping(.never))
+                        .textFieldStyle(.roundedBorder).frame(width: 65)
+                    Text("files per rule").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button("Preview and approve…", action: review)
+                    if rule.allowsAutomaticCleanup {
+                        Button("Require review") { rule.automaticApproval = nil }
+                    }
+                }
             }
             Divider()
             folder("Source folder", path: rule.sourcePath) { chooseFolder { rule.sourcePath = $0 } }

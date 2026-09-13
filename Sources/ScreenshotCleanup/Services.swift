@@ -25,11 +25,15 @@ struct AppServices {
     static let support = home.appendingPathComponent("Library/Application Support/Screenshot Cleanup", isDirectory: true)
     static func engine(settings: CleanupCore.Settings) -> CleanupEngine { CleanupEngine(rules: settings.rules) }
     static func store() throws -> Store { try Store(directory: support) }
-    static func clean(trigger: String) throws -> RunResult {
+    static func clean(trigger: String, review: CleanupPreview? = nil) throws -> RunResult {
         let store = try store()
         let lock = try RunLock(url: store.lockURL)
         return try withExtendedLifetime(lock) {
-            var result = engine(settings: try store.settings()).run(trigger: trigger, trash: FinderTrash.trash)
+            let settings = try store.settings()
+            if let review, review.rules != settings.rules {
+                throw CleanupError.command("Saved rules changed. Review cleanup again before continuing.")
+            }
+            var result = engine(settings: settings).run(trigger: trigger, reviewedCandidates: review?.candidates, trash: FinderTrash.trash)
             do { try store.record(result) }
             catch { result.errors.append("Could not save run history: \(error.localizedDescription)") }
             return result

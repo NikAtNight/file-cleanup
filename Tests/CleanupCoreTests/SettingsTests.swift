@@ -161,6 +161,65 @@ final class SettingsTests: XCTestCase {
         }
     }
 
+    func testAutomaticApprovalRevokesForEveryScopedChange() throws {
+        let original = CleanupRule.screenshots()
+        XCTAssertTrue(original.allowsAutomaticCleanup)
+        let changes: [(inout CleanupRule) -> Void] = [
+            { $0.sourcePath += "/Other" }, { $0.archivePath = nil }, { $0.extensions = ["jpg"] },
+            { $0.prefixes = [] }, { $0.ageHours = 48 }, { $0.maxAutomaticFiles = 26 }
+        ]
+        for change in changes {
+            var rule = original
+            change(&rule)
+            XCTAssertFalse(rule.allowsAutomaticCleanup)
+        }
+        var renamed = original
+        renamed.name = "Renamed"
+        XCTAssertTrue(renamed.allowsAutomaticCleanup)
+        for cap in [0, 1001] {
+            var rule = original
+            rule.maxAutomaticFiles = cap
+            XCTAssertThrowsError(try rule.validate())
+        }
+    }
+
+    func testFreshSettingsRequireReviewAndLegacySettingsKeepApproval() throws {
+        let fresh = Settings()
+        XCTAssertFalse(try XCTUnwrap(fresh.rules.first).allowsAutomaticCleanup)
+        let roundTrip = try JSONDecoder().decode(Settings.self, from: JSONEncoder().encode(fresh))
+        XCTAssertFalse(try XCTUnwrap(roundTrip.rules.first).allowsAutomaticCleanup)
+        let legacy = Data(#"{"enabled":true,"times":[{"hour":9,"minute":30}]}"#.utf8)
+        let migrated = try JSONDecoder().decode(Settings.self, from: legacy)
+        XCTAssertTrue(try XCTUnwrap(migrated.rules.first).allowsAutomaticCleanup)
+        let persistedMigration = try JSONDecoder().decode(Settings.self, from: JSONEncoder().encode(migrated))
+        XCTAssertTrue(try XCTUnwrap(persistedMigration.rules.first).allowsAutomaticCleanup)
+    }
+
+    func testLegacyApprovalOnlyMigratesExactOriginalScreenshotPolicy() throws {
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        let original = CleanupRule.screenshots()
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(original)) as? [String: Any])
+        object.removeValue(forKey: "automaticApproval")
+        object.removeValue(forKey: "maxAutomaticFiles")
+        func decode(_ value: [String: Any]) throws -> CleanupRule {
+            try decoder.decode(CleanupRule.self, from: JSONSerialization.data(withJSONObject: value))
+        }
+        XCTAssertTrue(try decode(object).allowsAutomaticCleanup)
+        var changed = object
+        changed["prefixes"] = [] as [String]
+        XCTAssertFalse(try decode(changed).allowsAutomaticCleanup)
+        changed = object
+        changed["id"] = UUID().uuidString
+        XCTAssertFalse(try decode(changed).allowsAutomaticCleanup)
+        changed = object
+        changed["automaticApproval"] = NSNull()
+        XCTAssertFalse(try decode(changed).allowsAutomaticCleanup)
+        var revoked = original
+        revoked.automaticApproval = nil
+        XCTAssertFalse(try decoder.decode(CleanupRule.self, from: encoder.encode(revoked)).allowsAutomaticCleanup)
+    }
+
     func testCorruptHistoryIsReportedAndNotOverwritten() throws {
         let store = try Store(directory: root)
         let corrupt = Data("broken history".utf8)

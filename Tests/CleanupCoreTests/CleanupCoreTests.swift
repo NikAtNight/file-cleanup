@@ -85,7 +85,7 @@ final class CleanupCoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))
     }
 
-    func testInvalidScreenshotsDirectoryReportsErrorAndStillCleansDesktop() throws {
+    func testInvalidScreenshotsDirectoryAbortsAllEffects() throws {
         let old = try file("Screenshot old.png", age: 90000)
         let obstruction = try file("Screenshots", contents: "keep this file")
         let engine = CleanupEngine(desktop: root)
@@ -99,8 +99,8 @@ final class CleanupCoreTests: XCTestCase {
         }
         XCTAssertFalse(result.succeeded)
         XCTAssertEqual(result.errors.count, 1)
-        XCTAssertEqual(result.trashed, 1)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))
+        XCTAssertEqual(result.trashed, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: old.path))
         XCTAssertEqual(try String(contentsOf: obstruction), "keep this file")
     }
 
@@ -218,7 +218,8 @@ final class CleanupCoreTests: XCTestCase {
                         prefixes: [])
         ]
         var batches: [[URL]] = []
-        let result = CleanupEngine(rules: rules).run(trigger: "test", now: now) { urls in
+        let engine = CleanupEngine(rules: rules)
+        let result = engine.run(trigger: "test", now: now, reviewedCandidates: engine.scan(now: now).candidates) { urls in
             batches.append(urls)
             for url in urls { try FileManager.default.removeItem(at: url) }
             return TrashBatchResult(trashed: urls.count)
@@ -256,6 +257,95 @@ final class CleanupCoreTests: XCTestCase {
         XCTAssertEqual(result.filed, 1)
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: collision.path), target.path)
         XCTAssertEqual(try String(contentsOf: archive.appendingPathComponent("Screenshot same-1.png")), "incoming")
+    }
+
+    func testUnapprovedRulesHaveNoAutomaticEffectsButReviewedRunWorks() throws {
+        let old = try file("Custom/old.png", age: 90000)
+        let rule = CleanupRule(name: "Custom", sourcePath: old.deletingLastPathComponent().path, prefixes: [])
+        let engine = CleanupEngine(rules: [rule])
+        let automatic = engine.run(trigger: "scheduled", now: now) { _ in XCTFail("Unapproved run"); return TrashBatchResult(trashed: 0) }
+        XCTAssertFalse(automatic.succeeded)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: old.path))
+        let manual = engine.run(trigger: "manual", now: now, reviewedCandidates: engine.scan(now: now).candidates) { urls in
+            for url in urls { try FileManager.default.removeItem(at: url) }
+            return TrashBatchResult(trashed: urls.count)
+        }
+        XCTAssertTrue(manual.succeeded)
+        XCTAssertEqual(manual.trashed, 1)
+    }
+
+    func testAutomaticLimitCountsFilingAndPausesAllRules() throws {
+        let old = try file("First/old.png", age: 90000)
+        let recent = try file("First/recent.png")
+        let other = try file("Second/other.png", age: 90000)
+        var first = CleanupRule(name: "First", sourcePath: old.deletingLastPathComponent().path,
+                                archivePath: root.appendingPathComponent("Archive").path, prefixes: [], maxAutomaticFiles: 1)
+        var second = CleanupRule(name: "Second", sourcePath: other.deletingLastPathComponent().path, prefixes: [])
+        first.automaticApproval = first.approvalSignature
+        second.automaticApproval = second.approvalSignature
+        let engine = CleanupEngine(rules: [first, second])
+        let result = engine.run(trigger: "scheduled", now: now) { _ in XCTFail("Limit must stop the whole run"); return TrashBatchResult(trashed: 0) }
+        XCTAssertFalse(result.succeeded)
+        XCTAssertEqual(result.filed, 0)
+        for url in [old, recent, other] { XCTAssertTrue(FileManager.default.fileExists(atPath: url.path)) }
+        let reviewed = engine.run(trigger: "manual", now: now, reviewedCandidates: engine.scan(now: now).candidates) { urls in
+            for url in urls { try FileManager.default.removeItem(at: url) }
+            return TrashBatchResult(trashed: urls.count)
+        }
+        XCTAssertTrue(reviewed.succeeded)
+        XCTAssertEqual(reviewed.trashed, 2)
+        XCTAssertEqual(reviewed.filed, 1)
+    }
+
+    func testReviewRejectsChangedMetadataAndNewCandidates() throws {
+        let old = try file("Screenshot old.png", age: 90000)
+        let engine = CleanupEngine(desktop: root)
+        let reviewed = engine.scan(now: now).candidates
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-91000)], ofItemAtPath: old.path)
+        let changed = engine.run(trigger: "manual", now: now, reviewedCandidates: reviewed) { _ in XCTFail("Stale review"); return TrashBatchResult(trashed: 0) }
+        XCTAssertFalse(changed.succeeded)
+        let refreshed = engine.scan(now: now).candidates
+        try file("Screenshot added.png", age: 90000)
+        let added = engine.run(trigger: "manual", now: now, reviewedCandidates: refreshed) { _ in XCTFail("New candidate"); return TrashBatchResult(trashed: 0) }
+        XCTAssertFalse(added.succeeded)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: old.path))
+    }
+
+    func testReviewRejectsReplacementWithSameSizeAndModificationDate() throws {
+        let old = try file("Screenshot old.png", age: 90000, contents: "first")
+        let engine = CleanupEngine(desktop: root)
+        let reviewed = engine.scan(now: now).candidates
+        let replacement = try file("replacement.png", age: 90000, contents: "other")
+        try FileManager.default.removeItem(at: old)
+        try FileManager.default.moveItem(at: replacement, to: old)
+        let fresh = engine.scan(now: now).candidates
+        XCTAssertEqual(fresh.first?.bytes, reviewed.first?.bytes)
+        XCTAssertEqual(fresh.first?.modifiedDate, reviewed.first?.modifiedDate)
+        XCTAssertNotEqual(fresh.first?.fileIdentity, reviewed.first?.fileIdentity)
+        let result = engine.run(trigger: "manual", now: now, reviewedCandidates: reviewed) { _ in
+            XCTFail("Replacement was not reviewed")
+            return TrashBatchResult(trashed: 0)
+        }
+        XCTAssertFalse(result.succeeded)
+        XCTAssertEqual(try String(contentsOf: old), "other")
+    }
+
+    func testProtectedLocationsAndPackageAncestorsAreRejectedBeforeEffects() throws {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let paths = ["/", home.path, "/System", "/Library", "/Applications", home.appendingPathComponent("Library").path]
+        for path in paths {
+            let engine = CleanupEngine(rules: [CleanupRule(name: "Protected", sourcePath: path, prefixes: [])])
+            let scan = engine.scan(now: now)
+            XCTAssertFalse(scan.errors.isEmpty, path)
+            XCTAssertTrue(scan.candidates.isEmpty, path)
+        }
+        for package in ["Archive.photoslibrary", "Archive.photolibrary", "Example.app"] {
+            let old = try file(package + "/Inside/old.png", age: 90000)
+            let engine = CleanupEngine(rules: [CleanupRule(name: "Package", sourcePath: old.deletingLastPathComponent().path, prefixes: [])])
+            let result = engine.run(trigger: "manual", now: now, reviewedCandidates: []) { _ in XCTFail("Protected files"); return TrashBatchResult(trashed: 0) }
+            XCTAssertFalse(result.succeeded)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: old.path))
+        }
     }
 
     func testRunLockExcludesConcurrentRunAndReleases() throws {

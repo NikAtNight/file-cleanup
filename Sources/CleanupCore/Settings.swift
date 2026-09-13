@@ -12,7 +12,7 @@ public struct Settings: Codable, Equatable, Sendable {
     public var times = [DailyTime(hour: 9, minute: 30), DailyTime(hour: 10, minute: 0)]
     public var rules = [CleanupRule.screenshots()]
     public var appearance: AppearancePreference = .system
-    public init() {}
+    public init() { rules[0].automaticApproval = nil }
     private enum CodingKeys: String, CodingKey { case enabled, times, rules, appearance }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)

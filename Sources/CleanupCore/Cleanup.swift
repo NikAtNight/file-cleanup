@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-public enum CleanupAction: String, Codable { case trash, file }
+public enum CleanupAction: String, Codable, Sendable { case trash, file }
 
 public struct ScanResult {
     public init() {}
@@ -15,7 +15,10 @@ public struct TrashBatchResult {
     public init(trashed: Int, errors: [String] = []) { self.trashed = trashed; self.errors = errors }
 }
 
-public struct Candidate: Identifiable {
+public struct Candidate: Identifiable, Equatable, Sendable {
+    public let ruleID: UUID
+    public let modifiedDate: Date
+    public let fileIdentity: String
     public var id: String { url.path }
     public let url: URL
     public let action: CleanupAction
@@ -46,12 +49,14 @@ public enum CleanupError: LocalizedError {
     }
 }
 
-public struct CleanupEngine {
+public struct CleanupEngine: Sendable {
     public let rules: [CleanupRule]
     public init(rules: [CleanupRule]) { self.rules = rules }
     public init(desktop: URL) {
-        rules = [CleanupRule(name: "Screenshots", sourcePath: desktop.path,
-                             archivePath: desktop.appendingPathComponent("Screenshots").path)]
+        var rule = CleanupRule(name: "Screenshots", sourcePath: desktop.path,
+                               archivePath: desktop.appendingPathComponent("Screenshots").path)
+        rule.automaticApproval = rule.approvalSignature
+        rules = [rule]
     }
 
     public func scan(now: Date = Date()) -> ScanResult {
@@ -75,10 +80,13 @@ public struct CleanupEngine {
                             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey, .fileSizeKey])
                             guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
                             guard let modified = values.contentModificationDate else { throw CocoaError(.fileReadUnknown) }
+                            var identity = stat()
+                            guard lstat(url.path, &identity) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+                            let fileIdentity = "\(identity.st_dev):\(identity.st_ino)"
                             if modified < cutoff {
-                                result.candidates.append(Candidate(url: url, action: .trash, bytes: Int64(values.fileSize ?? 0), ruleName: rule.name, destinationDirectory: nil))
+                                result.candidates.append(Candidate(ruleID: rule.id, modifiedDate: modified, fileIdentity: fileIdentity, url: url, action: .trash, bytes: Int64(values.fileSize ?? 0), ruleName: rule.name, destinationDirectory: nil))
                             } else if directory == rule.source, let archive = rule.archive {
-                                result.candidates.append(Candidate(url: url, action: .file, bytes: Int64(values.fileSize ?? 0), ruleName: rule.name, destinationDirectory: archive))
+                                result.candidates.append(Candidate(ruleID: rule.id, modifiedDate: modified, fileIdentity: fileIdentity, url: url, action: .file, bytes: Int64(values.fileSize ?? 0), ruleName: rule.name, destinationDirectory: archive))
                             }
                         } catch { result.errors.append("\(rule.name) / \(url.lastPathComponent): \(error.localizedDescription)") }
                     }
@@ -89,11 +97,31 @@ public struct CleanupEngine {
         return result
     }
 
-    public func run(trigger: String, now: Date = Date(), trash: ([URL]) throws -> TrashBatchResult) -> RunResult {
+    public func run(trigger: String, now: Date = Date(), reviewedCandidates: [Candidate]? = nil, trash: ([URL]) throws -> TrashBatchResult) -> RunResult {
         var result = RunResult(trigger: trigger)
         let scan = scan(now: now)
         result.errors = scan.errors
-        let oldFiles = scan.candidates.filter { $0.action == .trash }.map(\.url)
+        guard scan.errors.isEmpty else { return result }
+        var candidates = scan.candidates
+        if let reviewedCandidates {
+            guard candidates == reviewedCandidates else {
+                result.errors.append("Files changed since review. Refresh and review them again.")
+                return result
+            }
+        } else {
+            for rule in rules where rule.enabled {
+                let count = candidates.filter { $0.ruleID == rule.id }.count
+                if rule.allowsAutomaticCleanup && count > rule.maxAutomaticFiles {
+                    result.errors.append("\(rule.name): \(count) files exceeds the automatic limit of \(rule.maxAutomaticFiles). Review this cleanup manually.")
+                } else if !rule.allowsAutomaticCleanup && count > 0 {
+                    result.errors.append("\(rule.name): review required. Automatic cleanup has not been approved for these settings.")
+                }
+            }
+            if rules.contains(where: { rule in rule.enabled && rule.allowsAutomaticCleanup && candidates.filter { $0.ruleID == rule.id }.count > rule.maxAutomaticFiles }) { return result }
+            let approved = Set(rules.filter(\.allowsAutomaticCleanup).map(\.id))
+            candidates.removeAll { !approved.contains($0.ruleID) }
+        }
+        let oldFiles = candidates.filter { $0.action == .trash }.map(\.url)
         if !oldFiles.isEmpty {
             do {
                 let batch = try trash(oldFiles)
@@ -102,7 +130,7 @@ public struct CleanupEngine {
             }
             catch { result.errors.append(error.localizedDescription) }
         }
-        for candidate in scan.candidates where candidate.action == .file {
+        for candidate in candidates where candidate.action == .file {
             do {
                 guard let directory = candidate.destinationDirectory else { continue }
                 try verifyDirectory(directory)
@@ -116,8 +144,20 @@ public struct CleanupEngine {
 
     private func verifyDirectory(_ directory: URL) throws {
         // Check ancestors too, so a folder nested below a symlink cannot escape its selected location.
+        let normalized = directory.standardizedFileURL.resolvingSymlinksInPath().path
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.resolvingSymlinksInPath().path
+        let blocked = ["/System", "/Library", "/Applications", "/bin", "/sbin", "/usr", "/etc", "/private/etc", "/private/var/db", "/private/var/root", "/dev", home + "/Library"]
+        if normalized == "/" || normalized == home || ["/Users", "/Volumes", "/private", "/private/var", "/private/tmp", "/var", "/tmp"].contains(normalized) ||
+            blocked.contains(where: { normalized == $0 || normalized.hasPrefix($0 + "/") }) {
+            throw CleanupError.command("\(directory.path) is a protected location. Choose a folder containing your own files.")
+        }
         var current = directory.standardizedFileURL
         while current.path != "/" {
+            let packageExtensions = ["app", "bundle", "framework", "photoslibrary", "photolibrary"]
+            if packageExtensions.contains(current.pathExtension.lowercased()) ||
+                (try? current.resourceValues(forKeys: [.isPackageKey]).isPackage) == true {
+                throw CleanupError.command("\(directory.path) is inside a package or photo library. Choose an ordinary folder.")
+            }
             if (try? FileManager.default.destinationOfSymbolicLink(atPath: current.path)) != nil {
                 // macOS exposes /var and /tmp as system symlinks. These are valid temp roots, not user routing.
                 if current.path != "/var" && current.path != "/tmp" {

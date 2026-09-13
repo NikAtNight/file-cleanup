@@ -28,6 +28,9 @@ struct ContentView: View {
             }
             .background(canvas)
         }
+        .sheet(item: $model.preview) { review in
+            CleanupPreviewView(review: review, confirm: { model.confirmPreview(review) })
+        }
         .tint(accent)
         .onChange(of: model.settings.appearance) { model.applyAppearance($0) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refresh() }
@@ -60,7 +63,7 @@ struct ContentView: View {
             Button { model.selectedPage = "Rules" } label: {
                 Label("Manage folders", systemImage: "folder").font(.system(size: 12))
             }.buttonStyle(.plain).foregroundStyle(.secondary)
-            Text("FILE CLEANUP  2.1").font(.system(size: 9, weight: .medium, design: .monospaced)).foregroundStyle(.tertiary)
+            Text("FILE CLEANUP  2.2").font(.system(size: 9, weight: .medium, design: .monospaced)).foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 22).padding(.vertical, 30)
         .frame(width: 200)
@@ -123,14 +126,14 @@ struct ContentView: View {
                     }
                 }
                 HStack {
-                    Button(action: model.clean) {
+                    Button { model.reviewCleanup() } label: {
                         HStack(spacing: 8) {
                             if model.running { ProgressView().controlSize(.small) }
                             else { Image(systemName: "sparkles") }
-                            Text(model.running ? "Cleaning up…" : "Clean up now").fontWeight(.semibold)
+                            Text(model.running ? "Cleaning up…" : "Review cleanup…").fontWeight(.semibold)
                         }.padding(.horizontal, 12).padding(.vertical, 7)
                     }.buttonStyle(.borderedProminent).controlSize(.large)
-                        .disabled(model.busy || model.refreshing || model.candidates.isEmpty || !model.loaded).accessibilityLabel("Clean up now")
+                        .disabled(model.busy || model.refreshing || model.candidates.isEmpty || !model.loaded).accessibilityLabel("Review cleanup…")
                     Spacer()
                     VStack(alignment: .trailing, spacing: 4) {
                         Text("NEXT AUTOMATIC RUN").font(.system(size: 9, weight: .medium, design: .monospaced)).foregroundStyle(.secondary)
@@ -225,7 +228,7 @@ struct ContentView: View {
             }.card().disabled(model.running || model.saving)
             VStack(alignment: .leading, spacing: 12) {
                 Label("What happens at each run", systemImage: "arrow.triangle.2.circlepath").font(.system(size: 14, weight: .semibold))
-                Text("1. Find files matching your saved rules.\n2. Move older matches to Trash in a single batch.\n3. File newer matches when a destination is set.\n4. Save the result to Activity.")
+                Text("1. Scan saved rules and check folder access.\n2. Skip rules awaiting approval. Pause if an approved rule exceeds its file limit.\n3. Move older matches to Trash in one batch and file newer matches.\n4. Save the result to Activity.")
                     .font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(8)
                 Text("Times follow this Mac’s time zone. macOS may catch up after sleep. The app window can be closed; you need to stay logged in.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
@@ -279,7 +282,7 @@ struct ContentView: View {
                     HStack(alignment: .top) {
                         Image(systemName: run.succeeded ? "checkmark.circle.fill" : "exclamationmark.circle.fill").foregroundStyle(run.succeeded ? accent : .orange)
                         VStack(alignment: .leading, spacing: 5) {
-                            Text(run.succeeded ? "Cleanup complete" : "Completed with errors").font(.system(size: 14, weight: .semibold))
+                            Text(run.succeeded ? "Cleanup complete" : "Needs attention").font(.system(size: 14, weight: .semibold))
                             Text("\(run.trigger) · \(run.trashed) trashed · \(run.filed) filed").font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                         Spacer()

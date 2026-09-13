@@ -14,13 +14,25 @@ Each rule controls:
 - How many hours after its last modification a file becomes eligible for Trash.
 - An optional destination for newer matches. Older matches in that destination are also eligible for Trash.
 
-The initial rule matches `Screenshot *.png` and `Screen Shot *.png` in your own Desktop and Desktop/Screenshots folders, with a 24-hour threshold. Existing installations keep that behavior and their saved schedule. You can change or replace this rule.
+The initial rule matches `Screenshot *.png` and `Screen Shot *.png` in your own Desktop and Desktop/Screenshots folders, with a 24-hour threshold. Existing installations keep that exact rule automatic and retain their saved schedule. Other legacy rules start in review-only mode. You can change or replace this rule.
 
 Rules inspect only the selected folders, not their subfolders. Symbolic links, hidden files, and directories are skipped. Enabled rules cannot share the same source or destination. Filing never overwrites an existing file.
 
-Changes apply only after **Save rules**. Overview previews the saved rules. **Clean up now** and scheduled runs both use the same rule engine.
+Changes apply only after **Save rules**. Overview previews the saved rules. **Review cleanup** shows the full file list before a manual run. Manual and scheduled runs share the same rule engine.
 
 ![Cleanup rule settings](docs/screenshots/rules.png)
+
+## Safeguards
+
+New rules, including the starter rule on a fresh installation, start in **Review only**. They can preview files but cannot move anything on a schedule. Use **Preview and approve** to inspect the current matches and approve future automatic runs, then save the rule. Changing its folders, filters, age, or file limit requires approval again.
+
+Automatic cleanup pauses the entire run if any approved rule would move more than its limit. The default is 25 files per rule per run, counting both Trash and filing. The limit can be set from 1 to 1,000. Review-only rules are skipped. A scan error stops all file changes.
+
+Manual cleanup lists every file and destination and requires confirmation. It rescans under the cleanup lock before moving anything. If saved rules or the matching file list changed, including file identity, modification times, and sizes, the run stops for another review.
+
+The engine blocks system folders, your home folder itself, your Library, and folders inside packages such as Photos libraries. It skips subfolders and symbolic links. An ordinary photo folder can still match a rule, so leave irreplaceable files in review-only mode. Approval permits future matches and the limit applies per run, not across days. These guards reduce mistakes; they do not replace backups.
+
+![Automatic cleanup approval](docs/screenshots/approval.png)
 
 ## Trash and sound
 

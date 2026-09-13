@@ -4,6 +4,13 @@ import CleanupCore
 
 enum SettingsSection: Sendable { case schedule, rules, appearance }
 
+struct CleanupPreview: Identifiable {
+    let id = UUID()
+    let rules: [CleanupRule]
+    let candidates: [Candidate]
+    let approvalRule: CleanupRule?
+}
+
 @MainActor final class AppModel: ObservableObject {
     @Published var candidates: [Candidate] = []
     @Published var history: [RunResult] = []
@@ -19,6 +26,7 @@ enum SettingsSection: Sendable { case schedule, rules, appearance }
     @Published var errorMessage: String?
     @Published var selectedPage = "Overview"
     @Published var loaded = false
+    @Published var preview: CleanupPreview?
 
     var trashCount: Int { candidates.filter { $0.action == .trash }.count }
     var fileCount: Int { candidates.filter { $0.action == .file }.count }
@@ -26,7 +34,7 @@ enum SettingsSection: Sendable { case schedule, rules, appearance }
     var nextRun: Date? { scheduleLoaded ? savedSettings.nextRun() : nil }
 
     func refresh() {
-        guard !refreshing, !busy else { return }
+        guard !refreshing, !busy, preview == nil else { return }
         refreshing = true
         DispatchQueue.global(qos: .userInitiated).async {
             let settings = Result { try AppServices.store().settings() }
@@ -53,13 +61,44 @@ enum SettingsSection: Sendable { case schedule, rules, appearance }
         }
     }
 
-    func clean() {
+    func reviewCleanup(rule: CleanupRule? = nil) {
+        guard !busy, !refreshing else { return }
+        let rules = rule.map { [$0] } ?? savedSettings.rules
+        var scanRules = rules
+        if rule != nil { scanRules[0].enabled = true }
+        refreshing = true
+        errorMessage = nil
+        let engine = CleanupEngine(rules: scanRules)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let scan = engine.scan()
+            Task { @MainActor in
+                self.refreshing = false
+                if scan.errors.isEmpty {
+                    self.preview = CleanupPreview(rules: rules, candidates: scan.candidates, approvalRule: rule)
+                } else { self.errorMessage = scan.errors.joined(separator: "\n") }
+            }
+        }
+    }
+
+    func confirmPreview(_ review: CleanupPreview) {
+        preview = nil
+        if let rule = review.approvalRule {
+            guard let index = settings.rules.firstIndex(where: { $0.id == rule.id }), settings.rules[index] == rule else {
+                errorMessage = "The rule changed. Preview it again before enabling automatic cleanup."
+                return
+            }
+            settings.rules[index].automaticApproval = rule.approvalSignature
+            message = "Automatic cleanup approved for \(rule.name). Save rules to apply."
+        } else { clean(review: review) }
+    }
+
+    private func clean(review: CleanupPreview) {
         guard !busy, !refreshing else { return }
         running = true
         message = nil
         errorMessage = nil
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try AppServices.clean(trigger: "Manual") }
+            let result = Result { try AppServices.clean(trigger: "Manual", review: review) }
             Task { @MainActor in
                 self.running = false
                 switch result {
@@ -67,7 +106,7 @@ enum SettingsSection: Sendable { case schedule, rules, appearance }
                     if run.trashed > 0 { self.finderConnected = true }
                     self.message = "Moved \(run.trashed) to Trash · Filed \(run.filed)"
                     if !run.errors.isEmpty {
-                        self.errorMessage = "\(run.errors.count) item(s) need attention. Open Activity for details. If Finder access was denied, allow File Cleanup → Finder in System Settings → Privacy & Security → Automation."
+                        self.errorMessage = run.errors.joined(separator: "\n")
                     }
                 case .failure(let error): self.errorMessage = error.localizedDescription
                 }

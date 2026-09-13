@@ -6,7 +6,7 @@ Owner: Nikhil. Requested on 2026-09-13: fix the screenshot cleanup app and add a
 
 ## Intended behavior
 
-Opening the app shows Overview without modifying files. A saved rule specifies a source folder, extensions, literal filename prefixes, an age threshold in hours, and an optional folder for newer matches. Only regular, nonhidden, nonsymlink files directly inside the selected folders qualify. Newer files stay put unless a destination is configured. Older matches from all enabled rules enter one Finder Trash batch. Existing destination files remain intact.
+Opening the app shows Overview without modifying files. A saved rule specifies a source folder, extensions, literal filename prefixes, an age threshold in hours, and an optional folder for newer matches. Only regular, nonhidden, nonsymlink files directly inside the selected folders qualify. Newer files stay put unless a destination is configured. Older matches authorized for the current run enter one Finder Trash batch. Existing destination files remain intact.
 
 Rules cannot share a folder. Duplicate ownership is rejected before scanning or saving. The engine rejects user-created symlink folders and ancestors; the macOS /var and /tmp system redirects are allowed for temporary directories. The original screenshot rule remains the default and migration fallback. No rule is broadened during migration.
 
@@ -15,7 +15,7 @@ System, Light, and Dark appearance are available. Each editor saves its own sett
 ## Implementation path
 
 - `Settings.init(from:)` migrates older JSON with default rules and System appearance. `Settings.validate` checks rules, directory ownership, times, and unique IDs.
-- `CleanupRule` defines matching and age/location configuration. `CleanupEngine.scan` returns candidates plus contextual errors. Folder scan failures do not hide settings or stop unrelated readable folders.
+- `CleanupRule` defines matching and age/location configuration. `CleanupEngine.scan` returns candidates plus contextual errors. Folder scan failures do not hide settings; every run stops before side effects if the scan has any errors.
 - `AppServices.clean` holds `RunLock` across cleanup and history persistence. Both manual and scheduled entry points construct the engine from saved rules.
 - `FinderTrash.trash` resolves arguments into aliases and asks Finder to delete all accessible files once. It returns `TrashBatchResult` with confirmed count and skipped-file errors. Paths never enter AppleScript source. Finder-level failure warns that some files may already have moved, without per-file retries.
 - `AppModel.saveChanges` merges only the chosen settings section into saved settings. `ScheduleService.apply` serializes updates with cleanup, replaces the LaunchAgent, and rolls back on failure.
@@ -44,3 +44,24 @@ Environment: macOS 26, Apple silicon, Swift 6.3.3, Xcode 26.6.
 - NOT RUN: audible recording measurement, future wall-clock wake/sleep run, and installation on a second Mac. One Finder operation is verified; complete silence is not claimed.
 
 Native captures are in `docs/screenshots`. Local execution logs and temporary validation artifacts are ignored under `artifacts/`. The source and checks are recorded in Git; this document avoids a self-referential commit hash.
+
+## Safety update, 2026-09-13
+
+Nikhil requested safeguards against accidentally cleaning valuable folders and explicitly chose to keep the existing screenshot rule automatic. The owner remains Nikhil.
+
+- Fresh installations, new rules, and nondefault legacy rules require review. `CleanupRule.automaticApproval` records the approved folder/filter/age/limit configuration. Scope edits invalidate approval. An explicit null stays unapproved after persistence; only the exact legacy screenshot policy migrates automatically.
+- `AppModel.reviewCleanup` scans saved rules for manual cleanup or the draft rule for automatic approval. `CleanupPreviewView` lists every candidate and destination and requires acknowledgment. Approval updates the draft; Save rules applies it.
+- `AppServices.clean` holds the shared lock, compares reviewed rules with saved rules, then passes the reviewed candidates to `CleanupEngine.run`. The engine rescans and compares file identity, path, action, rule, destination, modification date, and size before any changes.
+- Scheduled runs skip unapproved rules. If an approved rule exceeds its per-run file limit, the entire run stops. Any scan error also stops all changes. System folders, home roots, user Library, and package ancestors including Photos libraries are blocked.
+- Approval covers future matching files. Ordinary photo folders are not identifiable as inherently valuable. Per-run caps do not prevent cumulative cleanup over several days, and external filesystem changes after the final scan remain possible. No permanent deletion or Trash emptying is added.
+
+Verification of the safety update on this Mac:
+
+- PASS: `swift test`, 34 tests, zero failures. New cases cover fresh-install review defaults, legacy approval, revocation, caps across rules, protected folders, scan failures, and changed or replaced files after manual review. Forbidden effects are asserted with temporary fixtures.
+- PASS: `bash scripts/build.sh` and `bash scripts/install.sh`, signed release installed with the original approved screenshot rule, dark appearance, and 09:30/10:00 schedule intact.
+- PASS: installed `--scheduled` entry with generated temporary files rejected both an unapproved rule and an approved rule above its limit. All fixture files stayed in place. Original settings were restored byte-for-byte; Activity records both blocked checks.
+- PASS: installed Rules view and automatic-approval sheet inspected. Confirmation was disabled before acknowledgment and enabled afterward; Cancel dismissed without approving. Capture: `docs/screenshots/approval.png`.
+- PASS: independent review found a missing file-identity check and a refresh/confirmation race. The implementation now compares device/inode identity and suppresses refresh while a preview is open; the replacement-file regression passes.
+- NOT RUN: moving real files through the new manual confirmation window, a future wall-clock scheduled run, and another Mac. Core manual-review execution is covered by the tests; prior Finder batch integration remains listed above.
+
+Local test output is `artifacts/safety-tests.log`, ignored by Git.
